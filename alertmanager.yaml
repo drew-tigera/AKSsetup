@@ -1,0 +1,26 @@
+global:
+  resolve_timeout: 5m
+  slack_api_url: 'https://hooks.slack.com/services/REPLACEME/REPLACEME/REPLACEME'
+route:
+  group_by: ['job']
+  group_wait: 45s
+  group_interval: 3m
+  repeat_interval: 10m
+  receiver: 'webhook'
+  routes:
+  - receiver: 'slack'
+    group_wait: 10s
+    group_by: [srcIP]
+    match:
+      denied_packet_type: no_quarantine
+receivers:
+- name: 'webhook'
+  webhook_configs:
+  - url: 'http://calico-alertmanager-webhook:30501/'
+- name: 'slack'
+  slack_configs:
+  - channel: '#aks-tsee-ist-jun19den'
+    title: "Source IP: {{ .GroupLabels.srcIP }}\n{{ range .Alerts }}- {{ .Annotations.summary }}\n{{ end }}"
+    title_link: "https://YourTSEEManagerURL/policies/tiered"
+    color: "warning"
+    text: "<!channel>\n{{ range .Alerts }}- {{ .Annotations.description }}\n{{ end }}"
