@@ -45,7 +45,7 @@ kubectl apply -f tsee-pull-secret.yaml
 
 Manifest below is updated for AKS (incl AKS interface name - azv, Policy only mode with azure-cni, and ALP enabled)
 ```
-kubectl apply -f aks-tsee-calico.yaml
+kubectl apply -f https://raw.githubusercontent.com/drew-tigera/AKSsetup/master/aks-tsee-calico.yaml
 watch kubectl get pods -n kube-system -o wide 
 ```
 
