@@ -1,0 +1,48 @@
+---
+# Source: tigera-secure-ee/templates/elastic-storage.yaml
+
+# This manifest implements elasticsearch-storage using local host-path volumes.
+# It is not suitable for production use; and only works on single node clusters.
+# For production or multinode clusters, use a different elasticsearch-storage implementation.
+
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: elasticsearch-storage
+  namespace: calico-monitoring
+provisioner: kubernetes.io/azure-disk
+
+---
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: tigera-elasticsearch-1
+  namespace: calico-monitoring
+spec:
+  capacity:
+    storage: 40Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: /var/tigera/elastic-data/1
+  persistentVolumeReclaimPolicy: Recycle
+  storageClassName: elasticsearch-storage
+
+---
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: tigera-elasticsearch-2
+  namespace: calico-monitoring
+spec:
+  capacity:
+    storage: 40Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: /var/tigera/elastic-data/2
+  persistentVolumeReclaimPolicy: Recycle
+  storageClassName: elasticsearch-storage
+
