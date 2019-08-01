@@ -290,7 +290,7 @@ metadata:
   name: calico-node-alertmanager
   namespace: calico-monitoring
 spec:
-  type: NodePort
+  type: LoadBalancer
   ports:
   - name: web
     nodePort: 30903
