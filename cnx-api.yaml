@@ -1,0 +1,321 @@
+---
+# Source: tigera-secure-ee-core/templates/cnx-api.yaml
+
+# This manifest adds the additional Tigera Secure EE components to a cluster
+# that has already had the Calico part of Tigera Secure EE deployed.
+# - It refers to the calico-config ConfigMap from that file, so if you are
+#   not using the provided hosted Calico manifest you must update
+#   references to that resource in this file.
+# - Optionally update the cnx-apiserver-certs ConfigMap and caBundle in the
+#   apiregistration section below to use your TLS certs for secure communication
+#   between the Tigera Secure EE API server and Kubernetes API server.
+
+# Optionally update this ConfigMap to use your own caBundle.
+apiVersion: apiregistration.k8s.io/v1beta1
+kind: APIService
+metadata:
+  name: v3.projectcalico.org
+spec:
+  group: projectcalico.org
+  versionPriority: 200
+  groupPriorityMinimum: 200
+  service:
+    name: cnx-api
+    namespace: kube-system
+  version: v3
+  # Optionally update the caBundle and disable insecureSkipTLSVerify in order
+  # to enable TLS certificate verification.
+  insecureSkipTLSVerify: true
+  #caBundle:
+
+---
+
+# This ClusterRole is used to control the RBAC mechanism for Calico tiered policy.
+# -  If the resources are set to ["networkpolicies","globalnetworkpolicies"], then RBAC for Calico policy has per-tier
+#    granularity defined using the "tier.networkpolicies" and "tier.globalnetworkpolicies" pseudo-resource types.
+#    This is the default as of v2.3.
+# -  If the resources are set to ["tier.networkpolicies","tier.globalnetworkpolicies"], this ensures RBAC for Calico
+#    policy is the v2.2 (and earlier) format, where Calico policy RBAC is identical across all tiers that the user can
+#    access (i.e. has 'get' access for).
+#
+# Never include both networkpolicies and tier.networkpolicies and/or globalnetworkpolicies and
+# tier.globalnetworkpolicies in the resources list for this ClusterRole since that will grant all users full access to
+# Calico policy.
+#
+# If you are upgrading from CNX v2.2 or earlier:
+# - to maintain v2.2 RBAC behavior for tiered Calico policy, modify the resources line below to read:
+#        resources: ["tier.networkpolicies","tier.globalnetworkpolicies"]
+# - to start using per-tier RBAC for Calico policy resources, prior to upgrading update any Role and ClusterRole
+#   resources for your users that reference the projectcalico.org policy resource types networkpolicies or
+#   globalnetworkpolicies to also include tier.networkpolicies and tier.globalnetworkpolicies respectively.
+#   For example, the resources ["networkpolicies"] would be replaced with ["networkpolicies", "tier.networkpolicies"].
+#   Once the upgrade is complete, the Role and ClusterRole definitions can be further updated to provide per-tier
+#   granularity of Calico policy RBAC. Refer to the Tigera documentation for details.
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: ee-calico-tiered-policy-passthru
+rules:
+- apiGroups: ["projectcalico.org"]
+  resources: ["networkpolicies","globalnetworkpolicies"]
+  verbs: ["*"]
+
+---
+
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: ee-calico-tiered-policy-passthru
+subjects:
+- kind: Group
+  name: system:authenticated
+  apiGroup: rbac.authorization.k8s.io
+- kind: Group
+  name: system:unauthenticated
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: ee-calico-tiered-policy-passthru
+  apiGroup: rbac.authorization.k8s.io
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: calico:system:auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: cnx-apiserver
+  namespace: kube-system
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: RoleBinding
+metadata:
+  name: calico-auth-reader
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+- kind: ServiceAccount
+  name: cnx-apiserver
+  namespace: kube-system
+
+---
+
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: cnx-apiserver
+  namespace: kube-system
+
+---
+# Give cnx-apiserver ServiceAccount permissions needed for
+# accessing various backing CRDs and K8s networkpolicies.
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: cnx-apiserver-role
+rules:
+  - apiGroups: ["extensions","networking.k8s.io",""]
+    resources:
+      - networkpolicies
+      - nodes
+      - namespaces
+      - pods
+      - serviceaccounts
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups: ["crd.projectcalico.org"]
+    resources:
+      - globalnetworkpolicies
+      - networkpolicies
+      - tiers
+      - clusterinformations
+      - hostendpoints
+      - licensekeys
+      - globalnetworksets
+      - globalthreatfeeds
+      - globalreporttypes
+      - globalreports
+    verbs:
+      - "*"
+
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: cnx-apiserver-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cnx-apiserver-role
+subjects:
+- kind: ServiceAccount
+  name: cnx-apiserver
+  namespace: kube-system
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: cnx-api
+  namespace: kube-system
+spec:
+  ports:
+  - name: apiserver
+    port: 443
+    protocol: TCP
+    targetPort: 5443
+  - name: queryserver
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    apiserver: "true"
+
+---
+
+# Audit policy for the Tigera Secure EE API Server.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: audit-policy-ee
+  namespace: kube-system
+data:
+  config: |-
+    apiVersion: audit.k8s.io/v1beta1
+    kind: Policy
+    rules:
+    - level: RequestResponse
+      omitStages:
+      - RequestReceived
+      verbs:
+      - create
+      - patch
+      - update
+      - delete
+      resources:
+      - group: projectcalico.org
+        resources:
+        - globalnetworkpolicies
+        - networkpolicies
+        - globalnetworksets
+        - tiers
+        - hostendpoints
+
+---
+
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: cnx-apiserver
+  namespace: kube-system
+  labels:
+    apiserver: "true"
+    k8s-app: cnx-apiserver
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      apiserver: "true"
+  template:
+    metadata:
+      name: cnx-apiserver
+      namespace: kube-system
+      labels:
+        apiserver: "true"
+        k8s-app: cnx-apiserver
+    spec:
+      nodeSelector:
+        beta.kubernetes.io/os: linux
+      serviceAccountName: cnx-apiserver
+      tolerations:
+        - key: node-role.kubernetes.io/master
+          effect: NoSchedule
+      imagePullSecrets:
+        - name: cnx-pull-secret
+      containers:
+      - name: cnx-apiserver
+        image: quay.io/tigera/cnx-apiserver:v2.4.0
+        args:
+          - "--secure-port=5443"
+          - "--authentication-skip-lookup=true"
+          - "--requestheader-client-ca-file=/code/certificates/requestheader-client-ca-file"
+          - "--audit-policy-file=/etc/tigera/audit/policy.conf"
+          - "--audit-log-path=/var/log/calico/audit/tsee-audit.log"
+        env:
+          - name: DATASTORE_TYPE
+            value: "kubernetes"
+        volumeMounts:
+          - mountPath: /var/log/calico/audit
+            name: var-log-calico-audit
+          - mountPath: /etc/tigera/audit
+            name: audit-policy-ee
+          - mountPath: /code/certificates/requestheader-client-ca-file
+            name: apiserver-certs
+            subPath: requestheader-client-ca-file
+        livenessProbe:
+          httpGet:
+            path: /version
+            port: 5443
+            scheme: HTTPS
+          initialDelaySeconds: 90
+          periodSeconds: 10
+      - name: cnx-queryserver
+        image: quay.io/tigera/cnx-queryserver:v2.4.0
+        env:
+          # Set queryserver logging to "info"
+          - name: LOGLEVEL
+            value: "info"
+          - name: DATASTORE_TYPE
+            value: "kubernetes"
+          # Sets Default Security Groups if tigera-aws-config exists
+          - name: TIGERA_DEFAULT_SECURITY_GROUPS
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-aws-config
+                key: default_sgs
+                optional: true
+          # Sets Pod Security Group if tigera-aws-config exists
+          - name: TIGERA_POD_SECURITY_GROUP
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-aws-config
+                key: pod_sg
+                optional: true
+        livenessProbe:
+          httpGet:
+            path: /version
+            port: 8080
+            scheme: HTTPS
+          initialDelaySeconds: 90
+          periodSeconds: 10
+      volumes:
+        # Volume for audit logs output
+        - name: var-log-calico-audit
+          hostPath:
+            path: /var/log/calico/audit
+            type: DirectoryOrCreate
+        - name: audit-policy-ee
+          configMap:
+            name: audit-policy-ee
+            items:
+            - key: config
+              path: policy.conf
+        - name: apiserver-certs
+          configMap:
+            name: extension-apiserver-authentication
