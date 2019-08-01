@@ -1,0 +1,1248 @@
+---
+# Source: tigera-secure-ee/templates/manager.yaml
+# This manifest adds the additional Tigera Secure EE Manager components to a cluster
+# that has already had the Calico part of Tigera Secure EE deployed.
+# - Update the tigera-cnx-manager-config ConfigMap below before use.
+# - This manifest makes the Tigera Secure EE Manager web server available via a NodePort
+#   serving on port 30003.  You may wish to update how this is exposed; do
+#   so by editing the tigera-cnx-manager-access Service below.
+
+# Update this ConfigMap with the Google login client id.
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: tigera-cnx-manager-config
+  namespace: calico-monitoring
+data:
+  # Authentication type.  Must be set to "OIDC", "Basic", "Token", or "OAuth".
+  tigera.cnx-manager.authentication-type: "Token"
+  # The OIDC authority.  Required if authentication-type is OIDC, ignored otherwise.
+  tigera.cnx-manager.oidc-authority: "https://accounts.google.com"
+  # The OIDC client id to use for OIDC login.  Kubelet must be configured accordingly.
+  # Value is ignored if not using OIDC login.
+  tigera.cnx-manager.oidc-client-id: "<oidc-client-id>"
+  # The OAuth endpoint. Required if authentication-type is OAuth, ignored otherwise.
+  tigera.cnx-manager.oauth-authority: "https://<oauth-authority>/oauth/authorize"
+  # The OAuth client id to use for OAuth login. Value is ignored if not using OAuth login.
+  tigera.cnx-manager.oauth-client-id: "cnx-manager"
+  # Prometheus server resource path
+  tigera.cnx-manager.prometheus-api-url: "/api/v1/namespaces/calico-monitoring/services/calico-node-prometheus:9090/proxy/api/v1"
+  # Compliance resource path
+  tigera.cnx-manager.compliance-reports-api-url: "/compliance/reports"
+  # Query api url
+  tigera.cnx-manager.query-api-url: "/api/v1/namespaces/kube-system/services/https:cnx-api:8080/proxy"
+  # Elasticsearch service resource path
+  tigera.cnx-manager.elasticsearch-api-url: "/tigera-elasticsearch"
+  # Path to Kibana.  The default is for a port forwarded to the NodePort included with the operator based install.
+  # Replace this with the URL of your Kibana if you installed it yourself or are accessing it differently.
+  tigera.cnx-manager.kibana-url: "http://127.0.0.1:30601"
+  # Whether sentry.io automatic error reporting of client side UI bugs is enabled.
+  tigera.cnx-manager.error-tracking: "false"
+  # Enable ALP support in the UI
+  tigera.cnx-manager.alp-support: "false"
+  # The name of the cluster.  This field is used as part of the index name of Elasticsearch logs, and is intended
+  # to allow multiple clusters to share one Elasticsearch cluster.  The value of this field must match that of 
+  # ELASTIC_INDEX_SUFFIX in tigera-fluentd-node.
+  tigera.cnx-manager.cluster-name: "cluster"
+
+---
+# Optionally update this Service to change how Tigera Secure EE Manager is accessed.
+# If using Google login, the URL for the web server must be configured
+# as a redirect URI in the Google project.  If the web server will be
+# accessed at https://<host>:<port>, add https://<host>:<port>/login/oidc/callback
+# to the redirect URI list for the project.
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    k8s-app: cnx-manager
+  name: cnx-manager
+  namespace: calico-monitoring
+spec:
+  selector:
+    k8s-app: cnx-manager
+  ports:
+    - port: 9443
+      targetPort: 9443
+      nodePort: 30003
+  type: LoadBalancer
+
+---
+
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: cnx-manager
+  namespace: calico-monitoring
+
+---
+
+# Give cnx-manager ServiceAccount permissions needed for
+# running authorization checks.
+# This is only required for the tigera-es-proxy container.
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: cnx-manager-role
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+  - apiGroups: ["authorization.k8s.io"]
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: cnx-manager-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cnx-manager-role
+subjects:
+- kind: ServiceAccount
+  name: cnx-manager
+  namespace: calico-monitoring
+
+---
+
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: cnx-manager
+  namespace: calico-monitoring
+  labels:
+    k8s-app: cnx-manager
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      name: cnx-manager
+      namespace: calico-monitoring
+      labels:
+        k8s-app: cnx-manager
+      annotations:
+        # Mark this pod as a critical add-on; when enabled, the critical add-on scheduler
+        # reserves resources for critical add-on pods so that they can be rescheduled after
+        # a failure.  This annotation works in tandem with the toleration below.
+        scheduler.alpha.kubernetes.io/critical-pod: ''
+    spec:
+      nodeSelector:
+        beta.kubernetes.io/os: linux
+      serviceAccountName: cnx-manager
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+      # Allow this pod to be rescheduled while the node is in "critical add-ons only" mode.
+      # This, along with the annotation above marks this pod as a critical add-on.
+      - key: CriticalAddonsOnly
+        operator: Exists
+      imagePullSecrets:
+        - name: cnx-pull-secret
+      containers:
+      - name: cnx-manager
+        image: quay.io/tigera/cnx-manager:v2.4.2
+        env:
+          - name: CNX_WEB_AUTHENTICATION_TYPE
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.authentication-type
+          - name: CNX_WEB_OIDC_AUTHORITY
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.oidc-authority
+          - name: CNX_WEB_OIDC_CLIENT_ID
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.oidc-client-id
+          - name: CNX_PROMETHEUS_API_URL
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.prometheus-api-url
+          - name: CNX_COMPLIANCE_REPORTS_API_URL
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.compliance-reports-api-url
+          - name: CNX_QUERY_API_URL
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.query-api-url
+          - name: CNX_ELASTICSEARCH_API_URL
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.elasticsearch-api-url
+          - name: CNX_ELASTICSEARCH_KIBANA_URL
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.kibana-url
+          - name: CNX_ENABLE_ERROR_TRACKING
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.error-tracking
+          - name: CNX_ALP_SUPPORT
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.alp-support
+          - name: CNX_CLUSTER_NAME
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.cluster-name
+          - name: CNX_WEB_OAUTH_AUTHORITY
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.oauth-authority
+          - name: CNX_WEB_OAUTH_CLIENT_ID
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.oauth-client-id
+        # Use the same liveness check as the proxy since
+        # the static content is only served over the localhost
+        # interface. Liveness check hits the static content through the proxy.
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 9443
+            scheme: HTTPS
+          initialDelaySeconds: 90
+          periodSeconds: 10
+      - name: cnx-manager-proxy
+        image: quay.io/tigera/cnx-manager-proxy:v2.4.2
+        env:
+          - name: CNX_WEB_AUTHENTICATION_TYPE
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.authentication-type
+          - name: CNX_WEB_OIDC_AUTHORITY
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.oidc-authority
+          - name: CNX_WEB_OIDC_CLIENT_ID
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.oidc-client-id
+          - name: CNX_WEB_OAUTH_AUTHORITY
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.oauth-authority
+          - name: CNX_WEB_OAUTH_CLIENT_ID
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-cnx-manager-config
+                key: tigera.cnx-manager.oauth-client-id
+        volumeMounts:
+        - mountPath: /etc/cnx-manager-web-tls
+          name: cnx-manager-tls
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 9443
+            scheme: HTTPS
+          initialDelaySeconds: 90
+          periodSeconds: 10
+      - name: tigera-es-proxy
+        image: quay.io/tigera/es-proxy:v2.4.0
+        env:
+          - name: LOG_LEVEL
+            value: "info"
+          - name: ELASTIC_ACCESS_MODE
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-es-config
+                key: tigera.elasticsearch.access-mode
+          - name: ELASTIC_SCHEME
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-es-config
+                key: tigera.elasticsearch.scheme
+          - name: ELASTIC_HOST
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-es-config
+                key: tigera.elasticsearch.host
+          - name: ELASTIC_PORT
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-es-config
+                key: tigera.elasticsearch.port
+          - name: ELASTIC_INSECURE_SKIP_VERIFY
+            value: "false"
+          - name: ELASTIC_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: tigera-es-config
+                key: tigera.elasticsearch.username
+                optional: true
+          - name: ELASTIC_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: tigera-es-config
+                key: tigera.elasticsearch.password
+                optional: true
+          - name: ELASTIC_CA
+            valueFrom:
+              configMapKeyRef:
+                name: tigera-es-config
+                key: tigera.elasticsearch.ca.path
+                optional: true
+        # Use the same liveness check as the cnx-manager-proxy since
+        # the es-proxy only listens for connections over localhost
+        # interface. Liveness check reaches tigera-es-proxy via the
+        # cnx-manager-proxy.
+        livenessProbe:
+          httpGet:
+            path: /tigera-elasticsearch/version
+            port: 9443
+            scheme: HTTPS
+          initialDelaySeconds: 90
+          periodSeconds: 10
+        volumeMounts:
+        - mountPath: /etc/ssl/elastic/
+          name: tigera-es-proxy-tls
+      volumes:
+      - name: cnx-manager-tls
+        secret:
+          secretName: cnx-manager-tls
+      - name: tigera-es-proxy-tls
+        secret:
+          optional: true
+          items:
+          - key: tigera.elasticsearch.ca
+            path: ca.pem
+          secretName: tigera-es-config
+---
+
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: tigera-ui-user
+rules:
+# "list" requests that the Tigera EE Manager needs
+- apiGroups: ["projectcalico.org","networking.k8s.io","extensions",""]
+  # Use both networkpolicies and tier.networkpolicies, and globalnetworkpolicies and tier.globalnetworkpolicies resource
+  # types to ensure identical behavior irrespective of the Calico RBAC scheme (see the ClusterRole
+  # "ee-calico-tiered-policy-passthru" for more details).
+  resources: ["tiers","networkpolicies","tier.networkpolicies","globalnetworkpolicies","tier.globalnetworkpolicies","namespaces","globalnetworksets"]
+  verbs: ["watch","list"]
+# Access to statistics
+- apiGroups: [""]
+  resources: ["services/proxy"]
+  resourceNames: ["https:cnx-api:8080", "calico-node-prometheus:9090"]
+  verbs: ["get","create"]
+- apiGroups: ["lma.tigera.io"]
+  resources: ["index"]
+  resourceNames: ["flows", "audit*", "events"]
+  verbs: ["get"]
+# Access to policies in the default tier
+- apiGroups: ["projectcalico.org"]
+  resources: ["tiers"]
+  resourceNames: ["default"]
+  verbs: ["get"]
+# List and download the reports in the UI.
+- apiGroups: ["projectcalico.org"]
+  resources: ["globalreports"]
+  verbs: ["get", "list"]
+- apiGroups: ["projectcalico.org"]
+  resources: ["globalreporttypes"]
+  verbs: ["get"]
+
+---
+
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: network-admin
+rules:
+# Full access to all network policies
+- apiGroups: ["projectcalico.org","networking.k8s.io","extensions"]
+  # Use both networkpolicies and tier.networkpolicies, and globalnetworkpolicies and tier.globalnetworkpolicies resource
+  # types to ensure identical behavior irrespective of the Calico RBAC scheme (see the ClusterRole
+  # "ee-calico-tiered-policy-passthru" for more details).
+  resources: ["tiers","networkpolicies","tier.networkpolicies","globalnetworkpolicies","tier.globalnetworkpolicies","globalnetworksets"]
+  verbs: ["create","update","delete","patch","get","watch","list"]
+# Additional "list" requests that the Tigera EE Manager needs
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["watch","list"]
+# Access to statistics
+- apiGroups: [""]
+  resources: ["services/proxy"]
+  resourceNames: ["https:cnx-api:8080", "calico-node-prometheus:9090"]
+  verbs: ["get","create"]
+# Access to flow logs, audit logs, and statistics
+- apiGroups: ["lma.tigera.io"]
+  resources: ["index"]
+  resourceNames: ["flows", "audit*", "events"]
+  verbs: ["get"]
+# Manage globalreport configuration, view report generation status, and list reports in the UI.
+- apiGroups: ["projectcalico.org"]
+  resources: ["globalreports"]
+  verbs: ["*"]
+- apiGroups: ["projectcalico.org"]
+  resources: ["globalreports/status"]
+  verbs: ["get", "list", "watch"]
+# Download the reports in the UI.
+- apiGroups: ["projectcalico.org"]
+  resources: ["globalreporttypes"]
+  verbs: ["get"]
+
+---
+
+# Allow users to access Tigera Secure EE Manager.
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: allow-cnx.cnx-manager-access
+  namespace: calico-monitoring
+spec:
+  order: 1
+  tier: allow-cnx
+  selector: k8s-app == 'cnx-manager'
+  types:
+  - Ingress
+  ingress:
+  - action: Allow
+    protocol: TCP
+    source:
+      # This policy allows access to Tigera Secure EE Manager from anywhere: narrow it down if
+      # only certain subnets should be allowed.
+      nets: ["0.0.0.0/0"]
+    destination:
+      # By default, Tigera Secure EE Manager is accessed over https. Update this if needed.
+      ports: [9443]
+---
+
+# Allow internal communication to compliance-server from Manager.
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: allow-cnx.compliance-server
+  namespace: calico-monitoring
+spec:
+  order: 1
+  tier: allow-cnx
+  selector: k8s-app == 'compliance-server'
+  types:
+  - Ingress
+  ingress:
+  - action: Allow
+    protocol: TCP
+    source:
+      selector: k8s-app == 'cnx-manager'
+    destination:
+      ports: [5443]
+
+---
+# Source: tigera-secure-ee/templates/compliance/compliance-controller.yaml
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: tigera-compliance-controller
+  namespace: calico-monitoring
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: Role
+metadata:
+  namespace: calico-monitoring
+  name: tigera-compliance-controller
+rules:
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "list", "get", "delete"]
+- apiGroups: [""]
+  resources: ["podtemplates"]
+  verbs: ["get"]
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRole
+metadata:
+  name: tigera-compliance-controller
+rules:
+- apiGroups: ["projectcalico.org"]
+  resources:
+    - globalreports
+  verbs:
+    - list
+- apiGroups: ["projectcalico.org"]
+  resources:
+    - globalreports/status
+  verbs:
+    - update
+    - list
+- apiGroups: ["projectcalico.org"]
+  resources:
+    - globalreports/finalizers
+  verbs:
+    - update
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: RoleBinding
+metadata:
+  name: tigera-compliance-controller
+  namespace: calico-monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tigera-compliance-controller
+subjects:
+- kind: ServiceAccount
+  name: tigera-compliance-controller
+  namespace: calico-monitoring
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: tigera-compliance-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tigera-compliance-controller
+subjects:
+- kind: ServiceAccount
+  name: tigera-compliance-controller
+  namespace: calico-monitoring
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliance-controller
+  namespace: calico-monitoring
+  labels:
+    k8s-app: compliance-controller
+spec:
+  replicas: 1
+  strategy:
+     type: Recreate
+  selector:
+    matchLabels:
+      k8s-app: compliance-controller
+  template:
+    metadata:
+      name: compliance-controller
+      namespace: calico-monitoring
+      labels:
+        k8s-app: compliance-controller
+    spec:
+      nodeSelector:
+        beta.kubernetes.io/os: linux
+      serviceAccountName: tigera-compliance-controller
+      tolerations:
+        - key: node-role.kubernetes.io/master
+          effect: NoSchedule
+      imagePullSecrets:
+        - name: cnx-pull-secret
+      containers:
+        - name: compliance-controller
+          image: quay.io/tigera/compliance-controller:v2.4.2
+          env:
+            - name: LOG_LEVEL
+              value: "info"
+            # This environment is used to configure how many failed jobs are maintained before the controller starts
+            # deleting them. Persisting failed jobs gives the operator an opportunity to examine the associated pod
+            # logs to determine the cause of the failure. Only one job is created by the controller for each scheduled
+            # report.
+            - name: TIGERA_COMPLIANCE_MAX_FAILED_JOBS_HISTORY
+              value: "3"
+            # This environment is used to configure how many times a job to generate a specific scheduled report will
+            # retry in the event of a failure.
+            - name: TIGERA_COMPLIANCE_MAX_JOB_RETRIES
+              value: "6"
+            # This environment is used to set the delay between the end time of the report and the start time
+            # of the job used to generate the report. This does not affect the actual times that the report
+            # covers. Defaults to 30m.
+            # - name: TIGERA_COMPLIANCE_JOB_START_DELAY
+            #   value: "30m"
+            - name: ELASTIC_INDEX_SUFFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.cluster-name
+            - name: ELASTIC_SCHEME
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.scheme
+                  optional: true
+            - name: ELASTIC_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.host
+            - name: ELASTIC_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.port
+                  optional: true
+            - name: ELASTIC_USER
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-compliance-user
+                  key: controller.username
+                  optional: true
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-compliance-user
+                  key: controller.password
+                  optional: true
+            - name: ELASTIC_SSL_VERIFY
+              value: "true"
+            - name: ELASTIC_CA
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.ca.path
+                  optional: true
+          volumeMounts:
+            - name: elastic-ca-cert-volume
+              mountPath: /etc/ssl/elastic/
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: 9099
+              host: localhost
+      volumes:
+        - name: elastic-ca-cert-volume
+          secret:
+            optional: true
+            items:
+            - key: tigera.elasticsearch.ca
+              path: ca.pem
+            secretName: tigera-es-config
+
+---
+# Source: tigera-secure-ee/templates/compliance/compliance-reporter.yaml
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: tigera-compliance-reporter
+  namespace: calico-monitoring
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRole
+metadata:
+  name: tigera-compliance-reporter
+rules:
+- apiGroups: ["projectcalico.org"]
+  resources:
+    - globalreporttypes
+    - globalreports
+  verbs:
+    - get
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: tigera-compliance-reporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tigera-compliance-reporter
+subjects:
+- kind: ServiceAccount
+  name: tigera-compliance-reporter
+  namespace: calico-monitoring
+
+---
+
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: tigera.io.report
+  namespace: calico-monitoring
+  labels:
+    k8s-app: compliance-reporter
+template:
+  metadata:
+    namespace: calico-monitoring
+    labels:
+      k8s-app: compliance-reporter
+  spec:
+    nodeSelector:
+      beta.kubernetes.io/os: linux
+    serviceAccountName: tigera-compliance-reporter
+    tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+    imagePullSecrets:
+      - name: cnx-pull-secret
+    containers:
+    - name: reporter
+      image: quay.io/tigera/compliance-reporter:v2.4.2
+      env:
+      - name: LOG_LEVEL
+        value: "warning"
+      - name: ELASTIC_INDEX_SUFFIX
+        valueFrom:
+          configMapKeyRef:
+            name: tigera-es-config
+            key: tigera.elasticsearch.cluster-name
+      - name: ELASTIC_SCHEME
+        valueFrom:
+          configMapKeyRef:
+            name: tigera-es-config
+            key: tigera.elasticsearch.scheme
+            optional: true
+      - name: ELASTIC_HOST
+        valueFrom:
+          configMapKeyRef:
+            name: tigera-es-config
+            key: tigera.elasticsearch.host
+      - name: ELASTIC_PORT
+        valueFrom:
+          configMapKeyRef:
+            name: tigera-es-config
+            key: tigera.elasticsearch.port
+            optional: true
+      - name: ELASTIC_USER
+        valueFrom:
+          secretKeyRef:
+            name: elastic-compliance-user
+            key: reporter.username
+            optional: true
+      - name: ELASTIC_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: elastic-compliance-user
+            key: reporter.password
+            optional: true
+      - name: ELASTIC_SSL_VERIFY
+        value: "true"
+      - name: ELASTIC_CA
+        valueFrom:
+          configMapKeyRef:
+            name: tigera-es-config
+            key: tigera.elasticsearch.ca.path
+            optional: true
+      volumeMounts:
+      - name: elastic-ca-cert-volume
+        mountPath: /etc/ssl/elastic/
+      livenessProbe:
+        httpGet:
+          path: /liveness
+          port: 9099
+    volumes:
+    - name: elastic-ca-cert-volume
+      secret:
+        optional: true
+        items:
+        - key: tigera.elasticsearch.ca
+          path: ca.pem
+        secretName: tigera-es-config
+
+---
+# Source: tigera-secure-ee/templates/compliance/compliance-server.yaml
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: tigera-compliance-server
+  namespace: calico-monitoring
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRole
+metadata:
+  name: tigera-compliance-server
+rules:
+- apiGroups: ["projectcalico.org"]
+  resources:
+    - globalreporttypes
+    - globalreports
+  verbs:
+    - get
+    - list
+    - watch
+- apiGroups: ["authentication.k8s.io"]
+  resources:
+    - tokenreviews
+  verbs:
+    - create
+- apiGroups: ["authorization.k8s.io"]
+  resources:
+    - subjectaccessreviews
+  verbs:
+    - create
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: tigera-compliance-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tigera-compliance-server
+subjects:
+- kind: ServiceAccount
+  name: tigera-compliance-server
+  namespace: calico-monitoring
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: compliance
+  namespace: calico-monitoring
+spec:
+  ports:
+  - name: compliance-api
+    port: 443
+    protocol: TCP
+    targetPort: 5443
+  selector:
+    k8s-app: compliance-server
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliance-server
+  namespace: calico-monitoring
+  labels:
+    k8s-app: compliance-server
+spec:
+  replicas: 1
+  strategy:
+     type: Recreate
+  selector:
+    matchLabels:
+      k8s-app: compliance-server
+  template:
+    metadata:
+      name: compliance-server
+      namespace: calico-monitoring
+      labels:
+        k8s-app: compliance-server
+    spec:
+      nodeSelector:
+        beta.kubernetes.io/os: linux
+      serviceAccountName: tigera-compliance-server
+      tolerations:
+        - key: node-role.kubernetes.io/master
+          effect: NoSchedule
+      imagePullSecrets:
+        - name: cnx-pull-secret
+      containers:
+        - name: compliance-server
+          image: quay.io/tigera/compliance-server:v2.4.2
+          env:
+            - name: LOG_LEVEL
+              value: "warning"
+            - name: ELASTIC_INDEX_SUFFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.cluster-name
+            - name: ELASTIC_SCHEME
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.scheme
+                  optional: true
+            - name: ELASTIC_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.host
+            - name: ELASTIC_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.port
+            - name: ELASTIC_USER
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-compliance-user
+                  key: server.username
+                  optional: true
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-compliance-user
+                  key: server.password
+                  optional: true
+            - name: ELASTIC_SSL_VERIFY
+              value: "true"
+            - name: ELASTIC_CA
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.ca.path
+                  optional: true
+          volumeMounts:
+            - name: elastic-ca-cert-volume
+              mountPath: /etc/ssl/elastic/
+      volumes:
+        - name: elastic-ca-cert-volume
+          secret:
+            optional: true
+            items:
+            - key: tigera.elasticsearch.ca
+              path: ca.pem
+            secretName: tigera-es-config
+
+---
+# Source: tigera-secure-ee/templates/compliance/compliance-snapshotter.yaml
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: tigera-compliance-snapshotter
+  namespace: calico-monitoring
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRole
+metadata:
+  name: tigera-compliance-snapshotter
+rules:
+  - apiGroups: ["extensions","networking.k8s.io",""]
+    resources:
+      - networkpolicies
+      - nodes
+      - namespaces
+      - pods
+      - serviceaccounts
+      - endpoints
+      - services
+    verbs:
+      - get
+      - list
+  - apiGroups: ["projectcalico.org"]
+    resources:
+      - globalnetworkpolicies
+      - networkpolicies
+      - tier.globalnetworkpolicies
+      - tier.networkpolicies
+      - tiers
+      - hostendpoints
+      - globalnetworksets
+    verbs:
+      - get
+      - list
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: tigera-compliance-snapshotter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tigera-compliance-snapshotter
+subjects:
+- kind: ServiceAccount
+  name: tigera-compliance-snapshotter
+  namespace: calico-monitoring
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliance-snapshotter
+  namespace: calico-monitoring
+  labels:
+    k8s-app: compliance-snapshotter
+spec:
+  replicas: 1
+  strategy:
+     type: Recreate
+  selector:
+    matchLabels:
+      k8s-app: compliance-snapshotter
+  template:
+    metadata:
+      name: compliance-snapshotter
+      namespace: calico-monitoring
+      labels:
+        k8s-app: compliance-snapshotter
+    spec:
+      nodeSelector:
+        beta.kubernetes.io/os: linux
+      serviceAccountName: tigera-compliance-snapshotter
+      tolerations:
+        - key: node-role.kubernetes.io/master
+          effect: NoSchedule
+      imagePullSecrets:
+        - name: cnx-pull-secret
+      containers:
+        - name: compliance-snapshotter
+          image: quay.io/tigera/compliance-snapshotter:v2.4.2
+          env:
+            - name: LOG_LEVEL
+              value: "info"
+            - name: TIGERA_COMPLIANCE_SNAPSHOT_HOUR
+              value: "0"
+            - name: ELASTIC_INDEX_SUFFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.cluster-name
+            - name: ELASTIC_SCHEME
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.scheme
+            - name: ELASTIC_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.host
+            - name: ELASTIC_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.port
+            - name: ELASTIC_USER
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-compliance-user
+                  key: snapshotter.username
+                  optional: true
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-compliance-user
+                  key: snapshotter.password
+                  optional: true
+            - name: ELASTIC_SSL_VERIFY
+              value: "true"
+            - name: ELASTIC_CA
+              valueFrom:
+                configMapKeyRef:
+                  name: tigera-es-config
+                  key: tigera.elasticsearch.ca.path
+                  optional: true
+          volumeMounts:
+            - name: elastic-ca-cert-volume
+              mountPath: /etc/ssl/elastic/
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: 9099
+      volumes:
+        - name: elastic-ca-cert-volume
+          secret:
+            optional: true
+            items:
+            - key: tigera.elasticsearch.ca
+              path: ca.pem
+            secretName: tigera-es-config
+
+---
+# Source: tigera-secure-ee/templates/compliance/compliance-report-types.yaml
+apiVersion: projectcalico.org/v3
+kind: GlobalReportType
+metadata:
+  creationTimestamp: null
+  labels:
+    global-report-type: inventory
+  name: inventory
+spec:
+  downloadTemplates:
+  - name: summary.csv
+    template: |-
+      {{ $c := csv }}
+      {{- $c := $c.AddColumn "startTime"                     "{{ dateRfc3339 .StartTime }}" }}
+      {{- $c := $c.AddColumn "endTime"                       "{{ dateRfc3339 .EndTime }}" }}
+      {{- $c := $c.AddColumn "endpointSelector"              "{{ if .ReportSpec.Endpoints }}{{ .ReportSpec.Endpoints.Selector }}{{ end }}" }}
+      {{- $c := $c.AddColumn "namespaceNames"                "{{ if .ReportSpec.Endpoints }}{{ if .ReportSpec.Endpoints.Namespaces }}{{ join \";\" .ReportSpec.Endpoints.Namespaces.Names }}{{ end }}{{ end }}" }}
+      {{- $c := $c.AddColumn "namespaceSelector"             "{{ if .ReportSpec.Endpoints }}{{ if .ReportSpec.Endpoints.Namespaces }}{{ .ReportSpec.Endpoints.Namespaces.Selector }}{{ end }}{{ end }}" }}
+      {{- $c := $c.AddColumn "serviceAccountNames"           "{{ if .ReportSpec.Endpoints }}{{ if .ReportSpec.Endpoints.ServiceAccounts }}{{ join \";\" .ReportSpec.Endpoints.ServiceAccounts.Names }}{{ end }}{{ end }}" }}
+      {{- $c := $c.AddColumn "serviceAccountSelectors"       "{{ if .ReportSpec.Endpoints }}{{ if .ReportSpec.Endpoints.ServiceAccounts }}{{ .ReportSpec.Endpoints.ServiceAccounts.Selector }}{{ end }}{{ end }}" }}
+      {{- $c := $c.AddColumn "endpointsNumInScope"           "{{ .EndpointsSummary.NumTotal }}" }}
+      {{- $c := $c.AddColumn "endpointsNumIngressProtected"  "{{ .EndpointsSummary.NumIngressProtected }}" }}
+      {{- $c := $c.AddColumn "endpointsNumEgressProtected"   "{{ .EndpointsSummary.NumEgressProtected }}" }}
+      {{- $c := $c.AddColumn "namespacesNumInScope"          "{{ .NamespacesSummary.NumTotal }}" }}
+      {{- $c := $c.AddColumn "namespacesNumIngressProtected" "{{ .NamespacesSummary.NumIngressProtected }}" }}
+      {{- $c := $c.AddColumn "namespacesNumEgressProtected"  "{{ .NamespacesSummary.NumEgressProtected }}" }}
+      {{- $c := $c.AddColumn "serviceAccountsNumInScope"     "{{ .EndpointsSummary.NumServiceAccounts }}" }}
+      {{- $c.Render . }}
+  - name: endpoints.csv
+    template: |-
+      {{ $c := csv }}
+      {{- $c := $c.AddColumn "endpoint"         "{{ .Endpoint }}" }}
+      {{- $c := $c.AddColumn "ingressProtected" "{{ .IngressProtected }}" }}
+      {{- $c := $c.AddColumn "egressProtected"  "{{ .EgressProtected }}" }}
+      {{- $c := $c.AddColumn "envoyEnabled"     "{{ .EnvoyEnabled }}" }}
+      {{- $c := $c.AddColumn "appliedPolicies"  "{{ join \";\" .AppliedPolicies }}" }}
+      {{- $c := $c.AddColumn "services"         "{{ join \";\" .Services }}" }}
+      {{- $c.Render .Endpoints }}
+  - name: namespaces.csv
+    template: |-
+      {{ $c := csv }}
+      {{- $c := $c.AddColumn "namespace"        "{{ .Namespace }}" }}
+      {{- $c := $c.AddColumn "ingressProtected" "{{ .IngressProtected }}" }}
+      {{- $c := $c.AddColumn "egressProtected"  "{{ .EgressProtected }}" }}
+      {{- $c := $c.AddColumn "envoyEnabled"     "{{ .EnvoyEnabled }}" }}
+      {{- $c.Render .Namespaces }}
+  - name: services.csv
+    template: |-
+      {{ $c := csv }}
+      {{- $c := $c.AddColumn "service"          "{{ .Service }}" }}
+      {{- $c := $c.AddColumn "ingressProtected" "{{ .IngressProtected }}" }}
+      {{- $c := $c.AddColumn "envoyEnabled"     "{{ .EnvoyEnabled }}" }}
+      {{- $c.Render .Services }}
+  includeEndpointData: true
+  uiSummaryTemplate:
+    name: ui-summary.json
+    template: '{"heading":"Inscope vs Protected","type":"panel","widgets":[{"data":[{"label":"Protected
+      ingress","value":{{ .EndpointsSummary.NumIngressProtected }}}],"heading":"Endpoints","summary":{"label":"Total","total":{{
+      .EndpointsSummary.NumTotal }}},"type":"radialbarchart"},{"data":[{"label":"Protected
+      ingress","value":{{ .NamespacesSummary.NumIngressProtected }}}],"heading":"Namespaces","summary":{"label":"Total","total":{{
+      .NamespacesSummary.NumTotal }}},"type":"radialbarchart"},{"data":[{"label":"Protected
+      egress","value":{{ .EndpointsSummary.NumEgressProtected }}}],"heading":"Endpoints","summary":{"label":"Total","total":{{
+      .EndpointsSummary.NumTotal }}},"type":"radialbarchart"},{"data":[{"label":"Protected
+      egress","value":{{ .NamespacesSummary.NumEgressProtected }}}],"heading":"Namespaces","summary":{"label":"Total","total":{{
+      .NamespacesSummary.NumTotal }}},"type":"radialbarchart"}]}'
+
+---
+
+apiVersion: projectcalico.org/v3
+kind: GlobalReportType
+metadata:
+  creationTimestamp: null
+  labels:
+    global-report-type: network-access
+  name: network-access
+spec:
+  downloadTemplates:
+  - name: summary.csv
+    template: |-
+      {{ $c := csv }}
+      {{- $c := $c.AddColumn "startTime"                             "{{ dateRfc3339 .StartTime }}" }}
+      {{- $c := $c.AddColumn "endTime"                               "{{ dateRfc3339 .EndTime }}" }}
+      {{- $c := $c.AddColumn "endpointSelector"                      "{{ if .ReportSpec.Endpoints }}{{ .ReportSpec.Endpoints.Selector }}{{ end }}" }}
+      {{- $c := $c.AddColumn "namespaceNames"                        "{{ if .ReportSpec.Endpoints }}{{ if .ReportSpec.Endpoints.Namespaces }}{{ join \";\" .ReportSpec.Endpoints.Namespaces.Names }}{{ end }}{{ end }}" }}
+      {{- $c := $c.AddColumn "namespaceSelector"                     "{{ if .ReportSpec.Endpoints }}{{ if .ReportSpec.Endpoints.Namespaces }}{{ .ReportSpec.Endpoints.Namespaces.Selector }}{{ end }}{{ end }}" }}
+      {{- $c := $c.AddColumn "serviceAccountNames"                   "{{ if .ReportSpec.Endpoints }}{{ if .ReportSpec.Endpoints.ServiceAccounts }}{{ join \";\" .ReportSpec.Endpoints.ServiceAccounts.Names }}{{ end }}{{ end }}" }}
+      {{- $c := $c.AddColumn "serviceAccountSelectors"               "{{ if .ReportSpec.Endpoints }}{{ if .ReportSpec.Endpoints.ServiceAccounts }}{{ .ReportSpec.Endpoints.ServiceAccounts.Selector }}{{ end }}{{ end }}" }}
+      {{- $c := $c.AddColumn "endpointsNumIngressProtected"          "{{ .EndpointsSummary.NumIngressProtected }}" }}
+      {{- $c := $c.AddColumn "endpointsNumEgressProtected"           "{{ .EndpointsSummary.NumEgressProtected }}" }}
+      {{- $c := $c.AddColumn "endpointsNumIngressUnprotected"        "{{ sub .EndpointsSummary.NumTotal .EndpointsSummary.NumIngressProtected }}" }}
+      {{- $c := $c.AddColumn "endpointsNumEgressUnprotected"         "{{ sub .EndpointsSummary.NumTotal .EndpointsSummary.NumEgressProtected  }}" }}
+      {{- $c := $c.AddColumn "endpointsNumIngressFromInternet"       "{{ .EndpointsSummary.NumIngressFromInternet }}" }}
+      {{- $c := $c.AddColumn "endpointsNumEgressToInternet"          "{{ .EndpointsSummary.NumEgressToInternet }}" }}
+      {{- $c := $c.AddColumn "endpointsNumIngressFromOtherNamespace" "{{ .EndpointsSummary.NumIngressFromOtherNamespace }}" }}
+      {{- $c := $c.AddColumn "endpointsNumEgressToOtherNamespace"    "{{ .EndpointsSummary.NumEgressToOtherNamespace }}" }}
+      {{- $c := $c.AddColumn "endpointsNumEnvoyEnabled"              "{{ .EndpointsSummary.NumEnvoyEnabled }}" }}
+      {{- $c.Render . }}
+  - name: endpoints.csv
+    template: |-
+      {{ $c := csv }}
+      {{- $c := $c.AddColumn "endpoint"                                  "{{ .Endpoint }}" }}
+      {{- $c := $c.AddColumn "ingressProtected"                          "{{ .IngressProtected }}" }}
+      {{- $c := $c.AddColumn "egressProtected"                           "{{ .EgressProtected }}" }}
+      {{- $c := $c.AddColumn "ingressFromInternet"                       "{{ .IngressFromInternet }}" }}
+      {{- $c := $c.AddColumn "egressToInternet"                          "{{ .EgressToInternet }}" }}
+      {{- $c := $c.AddColumn "ingressFromOtherNamespace"                 "{{ .IngressFromOtherNamespace }}" }}
+      {{- $c := $c.AddColumn "egressToOtherNamespace"                    "{{ .EgressToOtherNamespace }}" }}
+      {{- $c := $c.AddColumn "envoyEnabled"                              "{{ .EnvoyEnabled }}" }}
+      {{- $c := $c.AddColumn "appliedPolicies"                           "{{ join \";\" .AppliedPolicies }}" }}
+      {{- $c := $c.AddColumn "trafficAggregationPrefix"                  "{{ flowsPrefix . }}" }}
+      {{- $c := $c.AddColumn "endpointsGeneratingTrafficToThisEndpoint"  "{{ join \";\" (flowsIngress .) }}" }}
+      {{- $c := $c.AddColumn "endpointsReceivingTrafficFromThisEndpoint" "{{ join \";\" (flowsEgress .) }}" }}
+      {{- $c.Render .Endpoints }}
+  includeEndpointData: true
+  uiSummaryTemplate:
+    name: ui-summary.json
+    template: '{"heading":"Inscope vs Protected","type":"panel","widgets":[{"data":[{"label":"Protected
+      ingress","value":{{ .EndpointsSummary.NumIngressProtected }}}],"heading":"Endpoints","summary":{"label":"Total","total":{{
+      .EndpointsSummary.NumTotal }}},"type":"radialbarchart"},{"data":[{"label":"Protected
+      ingress","value":{{ .NamespacesSummary.NumIngressProtected }}}],"heading":"Namespaces","summary":{"label":"Total","total":{{
+      .NamespacesSummary.NumTotal }}},"type":"radialbarchart"},{"data":[{"label":"Protected
+      egress","value":{{ .EndpointsSummary.NumEgressProtected }}}],"heading":"Endpoints","summary":{"label":"Total","total":{{
+      .EndpointsSummary.NumTotal }}},"type":"radialbarchart"},{"data":[{"label":"Protected
+      egress","value":{{ .NamespacesSummary.NumEgressProtected }}}],"heading":"Namespaces","summary":{"label":"Total","total":{{
+      .NamespacesSummary.NumTotal }}},"type":"radialbarchart"}]}'
+
+---
+
+apiVersion: projectcalico.org/v3
+kind: GlobalReportType
+metadata:
+  creationTimestamp: null
+  labels:
+    global-report-type: policy-audit
+  name: policy-audit
+spec:
+  auditEventsSelection:
+    resources:
+    - resource: globalnetworkpolicies
+    - resource: networkpolicies
+  downloadTemplates:
+  - name: summary.csv
+    template: |-
+      {{ $c := csv }}
+      {{- $c := $c.AddColumn "startTime"               "{{ dateRfc3339 .StartTime }}" }}
+      {{- $c := $c.AddColumn "endTime"                 "{{ dateRfc3339 .EndTime }}" }}
+      {{- $c := $c.AddColumn "endpointSelector"        "{{ if .ReportSpec.Endpoints }}{{ .ReportSpec.Endpoints.Selector }}{{ end }}" }}
+      {{- $c := $c.AddColumn "namespaceNames"          "{{ if .ReportSpec.Endpoints }}{{ if .ReportSpec.Endpoints.Namespaces }}{{ join \";\" .ReportSpec.Endpoints.Namespaces.Names }}{{ end }}{{ end }}" }}
+      {{- $c := $c.AddColumn "namespaceSelector"       "{{ if .ReportSpec.Endpoints }}{{ if .ReportSpec.Endpoints.Namespaces }}{{ .ReportSpec.Endpoints.Namespaces.Selector }}{{ end }}{{ end }}" }}
+      {{- $c := $c.AddColumn "serviceAccountNames"     "{{ if .ReportSpec.Endpoints }}{{ if .ReportSpec.Endpoints.ServiceAccounts }}{{ join \";\" .ReportSpec.Endpoints.ServiceAccounts.Names }}{{ end }}{{ end }}" }}
+      {{- $c := $c.AddColumn "serviceAccountSelectors" "{{ if .ReportSpec.Endpoints }}{{ if .ReportSpec.Endpoints.ServiceAccounts }}{{ .ReportSpec.Endpoints.ServiceAccounts.Selector }}{{ end }}{{ end }}" }}
+      {{- $c := $c.AddColumn "numCreatedPolicies"      "{{ .AuditSummary.NumCreate }}" }}
+      {{- $c := $c.AddColumn "numModifiedPolicies"     "{{ .AuditSummary.NumModify }}" }}
+      {{- $c := $c.AddColumn "numDeletedPolicies"      "{{ .AuditSummary.NumDelete }}" }}
+      {{- $c.Render . }}
+  - name: events.json
+    template: '{{ toJson .AuditEvents }}'
+  - name: events.yaml
+    template: '{{ toYaml .AuditEvents }}'
+  uiSummaryTemplate:
+    name: ui-summary.json
+    template: '{"heading":"Network Policy Configuration Changes","type":"panel","widgets":[{"data":[{"label":"Created","value":{{
+      .AuditSummary.NumCreate }}}],"heading":"Network Policies","summary":{"label":"Total","total":{{
+      .AuditSummary.NumTotal }}},"type":"radialbarchart"},{"data":[{"label":"Modified","value":{{
+      .AuditSummary.NumModify }}}],"heading":"Network Policies","summary":{"label":"Total","total":{{
+      .AuditSummary.NumTotal }}},"type":"radialbarchart"},{"data":[{"label":"Deleted","value":{{
+      .AuditSummary.NumDelete }}}],"heading":"Network Policies","summary":{"label":"Total","total":{{
+      .AuditSummary.NumTotal }}},"type":"radialbarchart"}]}'
+
+
