@@ -400,7 +400,7 @@ spec:
     - port: 5601
       targetPort: 5601
       nodePort: 30601
-  type: NodePort
+  type: LoadBalancer
 ---
 
 apiVersion: v1
