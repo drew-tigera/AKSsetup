@@ -252,22 +252,46 @@ The output should look like this:
 
 ### 3. Deploy AKS Cluster
 
-Deploy AKS cluster without --network-policy option
+Create a resource group for the cluster:
 
+```
+az group create --name <YourResourceGroupName> --location $location
+```
+The output should look like this:
+
+```
+{
+  "id": "/subscriptions/058e3078-XXXX-XXXX-XXXX-98aXXXXXXXX9/resourceGroups/myresourcegroup",
+  "location": "centralus",
+  "managedBy": null,
+  "name": "myresourcegroup",
+  "properties": {
+    "provisioningState": "Succeeded"
+  },
+  "tags": null,
+  "type": null
+}
+```
+Get your Azure tenant ID:
+
+```
+tenantId=$(az account show --query tenantId -o tsv)
+```
+Now build the actual cluster:
 
 ```
 az aks create \
-  --resource-group   $aksname  \
-  --name $aksname \
-  --node-count 2 \
-  --generate-ssh-keys \
-  --aad-server-app-id $serverApplicationId \
-  --aad-server-app-secret $serverApplicationSecret \
-  --aad-client-app-id $clientApplicationId \
-  --aad-tenant-id $tenantId \
-  --service-principal $appId \
-  --client-secret $clientSecret
+    --resource-group <yourResourceGroup> \
+    --name $aksname \
+    --node-count 2 \
+    --generate-ssh-keys \
+    --aad-server-app-id $serverApplicationId \
+    --aad-server-app-secret $serverApplicationSecret \
+    --aad-client-app-id $clientApplicationId \
+    --aad-tenant-id $tenantId
 ```
+This command will take a few minutes.
+
 
 ### Create New cluster-admin role
 
