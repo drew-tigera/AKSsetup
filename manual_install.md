@@ -54,10 +54,10 @@ Proceed further after all calico-node pods show ready (1/1)
 ### 3. Deploy TSEE apiserver (cnx-api)
 
 ```
-kubectl apply  -f cnx-api.yaml
+kubectl apply -f https://raw.githubusercontent.com/drew-tigera/AKSsetup/master/cnx-api.yaml
 ```
 
-Deploy License and Verify
+Deploy License and Verify - this is the license yaml file you should have received from your sales team.
 ```
 kubectl apply -f tigera-license.yaml
 kubectl get Licensekeys default
@@ -66,46 +66,46 @@ kubectl get Licensekeys default
 
 ### 4. Deploy Monitoring, Logging, Alerting
 
+Setup policy to allow Tigera Secure to communicate with itself.
+
+```
+kubectl apply -f https://raw.githubusercontent.com/drew-tigera/AKSsetup/master/cnx-policy.yaml
+```
+
 Deploy Prometheus and EFK Operator
 
 ```
-kubectl apply -f operator.yaml
+kubectl apply -f https://raw.githubusercontent.com/drew-tigera/AKSsetup/master/operator.yaml
 kubectl get crd |grep upmc
 ```
 
 Proceed further after CRD appears (will take ~45 seconds)
 
-Deploy Storage for Elastic. The manifest below enables local storage, and is intended for PoC use only. In production please use properly managed shared storage and Persistent volumes.
+Deploy Storage for Elastic. The manifest below enables local storage, and is intended for PoC use only. In production please use properly managed shared storage and Persistent volumes. This yaml has been modified to use azure-disk for its persistent volumes.
 
 ```
-kubectl apply -f elastic-storage-local.yaml
+kubectl apply -f https://raw.githubusercontent.com/drew-tigera/AKSsetup/master/elastic-storage-azure.yaml
 ```
 
 Customize the monitor-calico.yaml manifest below as desired. Typical changes might be to the tigera-es-config configMap, as well as to the alerting destination in alertmanager.yaml.
 Note that the Kibana service type has been changed to a LoadBalancer from NodePort.
 
 ```
-kubectl apply -f monitor-calico.yaml
+kubectl apply -f https://raw.githubusercontent.com/drew-tigera/AKSsetup/master/elastic-storage-azure.yaml
 watch kubectl get pods -n calico-monitoring
 ```
 
 Proceed further after the elastic-tsee-installer job pod shows as "Completed". This will typically take a few minutes (~4-5).
 
 ```
-kubectl get svc -n calico-monitoring tigera-kibana -o 'jsonpath={.status.loadBalancer.ingress[*].ip}'
+kubectl apply -f https://raw.githubusercontent.com/drew-tigera/AKSsetup/master/monitor-calico-aks.yaml
+kubectl get svc -n calico-monitoring tigera-kibana -o 
 ```
 
-Make a note of that IP - this is your Kibana IP. Browse to http://KibanaIP:5601/ and:
+Make a note of that public IP - this is your Kibana IP. Browse to http://KibanaIP:5601/ and:
 - Click on Dashboard
 - Click on TSEE Flow Logs
 - Click on the Star at the top right (to make Flow logs the default index)
-
-### 5. Deploy TSEE UI (cnx-manager)
-
-Deploy failsafe policies
-```
-kubectl apply -f https://docs.tigera.io/v2.4/getting-started/kubernetes/installation/hosted/cnx/1.7/cnx-policy.yaml
-```
 
 Create certs for cnx-manager
 ```
@@ -129,10 +129,10 @@ kubectl get csr cnxmanager.calico-monitoring -o jsonpath='{.status.certificate}'
 kubectl create secret generic cnx-manager-tls --from-file=cert=./cnxmanager.crt --from-file=key=./cnxmanager.key -n calico-monitoring
 ```
 
-Replace Kibana url (tigera.cnx-manager.kibana-url) in manifest below with your Kibana IP.
+Before applying cnx.yaml be sure to replace Kibana url (tigera.cnx-manager.kibana-url) in manifest below with your Kibana IP. Note we've already changed the default NodePort to LoadBalancer for this yaml 
 ``` 
-wget https://docs.tigera.io/v2.4/getting-started/kubernetes/installation/hosted/kubernetes-datastore/policy-only-ecs/cnx.yaml
-sed -i 's#Type: NodePort#Type: LoadBalancer#g' cnx.yaml
+wget https://raw.githubusercontent.com/drew-tigera/AKSsetup/master/cnx.yaml
+kubectl apply -f cnx.yaml
 ```
 
 Create Service Account to log in to the UI.
