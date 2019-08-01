@@ -7,7 +7,7 @@
 Apply manifest to change CNI configuration and have kured reboot nodes
 
 ```
-kubectl apply -f bridge-to-transparent.yaml
+kubectl apply -f https://raw.githubusercontent.com/drew-tigera/AKSsetup/master/bridge_to_transparent.yaml
 ```
 
 Watch nodes and pods to ensure that all nodes have rebooted
@@ -15,15 +15,29 @@ Watch nodes and pods to ensure that all nodes have rebooted
 ```
 watch kubectl get pods --all-namespaces -o wide 
 kubectl get nodes -o wide
-kubectl describe node <node-name> |grep reboot
+kubectl describe node <node-name> | grep reboot
 ```
 
 Proceed further after every node has rebooted. This might take a few minutes for your cluster, depending on it's size.
 
+The purpose of this step is to convert the Azure CNI to transparent mode to allow Calico and TSEE to install.
+
+Once it's completed run this command to remove this utility from the cluster. You won't need it again.
+
+```
+kubectl delete -f https://raw.githubusercontent.com/drew-tigera/AKSsetup/master/bridge_to_transparent.yaml
+```
+
 
 ### 2.  Deploy TSEE version of calico-node for AKS
 
-If necessary, create Pull secret to allow TSEE images to be pulled from quay.io
+If necessary, create Pull secret to allow TSEE images to be pulled from quay.io.
+
+If you are using a private repository for your container images you will need to follow the instructions for "Setting Up Acess to Required Images" here: https://docs.tigera.io/v2.4/getting-started/kubernetes/installation/eks
+
+If you are going to use our quay.io repository you will need to create a tsee-pull-secret yaml file. Please follow steps 7-10 here to build and install your pull secret. 
+
+
 ```
 kubectl create ns calico-monitoring
 kubectl apply -f tsee-pull-secret.yaml
