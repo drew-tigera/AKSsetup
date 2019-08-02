@@ -148,8 +148,6 @@ Note the secret above. You will need this to log in to the UI.
 
 Apply cnx-manager manifest
 ```
-kubectl apply -f cnx.yaml
-watch kubectl get svc -n calico-monitoring cnx-manager
 kubectl get svc -n calico-monitoring cnx-manager -o 'jsonpath={.status.loadBalancer.ingress[*].ip}'
 ```
 
