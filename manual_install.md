@@ -98,7 +98,6 @@ watch kubectl get pods -n calico-monitoring
 Proceed further after the elastic-tsee-installer job pod shows as "Completed". This will typically take a few minutes (~4-5).
 
 ```
-kubectl apply -f https://raw.githubusercontent.com/drew-tigera/AKSsetup/master/monitor-calico-aks.yaml
 kubectl get svc -n calico-monitoring tigera-kibana -o 
 ```
 
