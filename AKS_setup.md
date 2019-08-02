@@ -1,7 +1,7 @@
 Please note values in angle brackets <YourValueHere> are meant to be replaced with your specific values. We use environment variables to facilitate this.
   
   
-# Installing Azure AKS with Azure Active Directory Integration
+# Installing Azure AKS with Azure Active Directory and Azure CNI Integration
 
 
 ### 1. Environment Vars 
