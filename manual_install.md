@@ -91,7 +91,7 @@ Customize the monitor-calico.yaml manifest below as desired. Typical changes mig
 Note that the Kibana service type has been changed to a LoadBalancer from NodePort.
 
 ```
-kubectl apply -f https://raw.githubusercontent.com/drew-tigera/AKSsetup/master/elastic-storage-azure.yaml
+kubectl apply -f https://raw.githubusercontent.com/drew-tigera/AKSsetup/master/monitor-calico-aks.yaml
 watch kubectl get pods -n calico-monitoring
 ```
 
