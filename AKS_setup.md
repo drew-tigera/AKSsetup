@@ -283,12 +283,13 @@ Now build the actual cluster:
 az aks create \
     --resource-group <yourResourceGroup> \
     --name $aksname \
-    --node-count 2 \
+    --node-count 3 \
     --generate-ssh-keys \
     --aad-server-app-id $serverApplicationId \
     --aad-server-app-secret $serverApplicationSecret \
     --aad-client-app-id $clientApplicationId \
     --aad-tenant-id $tenantId
+    --network-plugin azure
 ```
 This command will take a few minutes.
 
